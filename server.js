@@ -1,49 +1,89 @@
 const express = require("express");
 const cors = require("cors");
 const multer = require("multer");
-const cloudinary = require("cloudinary").v2;
-require("dotenv").config();
+const fs = require("fs");
+const path = require("path");
 
 const app = express();
 
 const PORT = process.env.PORT || 10000;
 
-// --------------------------------------------------
-// Middleware
-// --------------------------------------------------
+// ======================================================
+// BASIC MIDDLEWARE
+// ======================================================
 
 app.use(cors());
 
-app.use(express.json());
+app.use(express.json({
+    limit: "2mb"
+}));
 
+app.use(express.urlencoded({
+    extended: true,
+    limit: "2mb"
+}));
 
-// --------------------------------------------------
-// Cloudinary Configuration
-// --------------------------------------------------
+// ======================================================
+// UPLOAD DIRECTORY
+// ======================================================
 
-cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET
+const uploadDirectory = path.join(
+    __dirname,
+    "uploads"
+);
+
+if (!fs.existsSync(uploadDirectory)) {
+    fs.mkdirSync(uploadDirectory, {
+        recursive: true
+    });
+}
+
+// ======================================================
+// MULTER CONFIGURATION
+// ======================================================
+
+const storage = multer.diskStorage({
+
+    destination: function (req, file, cb) {
+        cb(null, uploadDirectory);
+    },
+
+    filename: function (req, file, cb) {
+
+        const extension =
+            path.extname(file.originalname)
+                .toLowerCase();
+
+        const safeName =
+            `image_${Date.now()}_${Math.random()
+                .toString(36)
+                .substring(2, 10)}${extension}`;
+
+        cb(null, safeName);
+    }
 });
 
-
-// --------------------------------------------------
-// Multer Configuration
-// --------------------------------------------------
-
 const upload = multer({
-    storage: multer.memoryStorage(),
+
+    storage: storage,
 
     limits: {
         fileSize: 10 * 1024 * 1024
     },
 
-    fileFilter: (req, file, cb) => {
+    fileFilter: function (req, file, cb) {
+
+        if (!file.mimetype) {
+            return cb(
+                new Error("Invalid image type.")
+            );
+        }
 
         if (!file.mimetype.startsWith("image/")) {
             return cb(
-                new Error("Only image files are allowed.")
+                new Error(
+                    "Only image files are allowed."
+                )
             );
         }
 
@@ -51,29 +91,51 @@ const upload = multer({
     }
 });
 
+// ======================================================
+// STATIC IMAGE ACCESS
+// ======================================================
 
-// --------------------------------------------------
-// Health Check
-// --------------------------------------------------
+app.use(
+    "/uploads",
+    express.static(uploadDirectory)
+);
 
-app.get("/", (req, res) => {
+// ======================================================
+// ROOT
+// ======================================================
 
-    res.json({
+app.get("/", function (req, res) {
+
+    res.status(200).json({
         success: true,
-        message: "Friends Circle Backend is running",
+        message:
+            "Friends Circle Backend is running",
         status: "OK"
     });
 });
 
+// ======================================================
+// HEALTH CHECK
+// ======================================================
 
-// --------------------------------------------------
-// Image Upload
-// --------------------------------------------------
+app.get("/api/health", function (req, res) {
+
+    res.status(200).json({
+        success: true,
+        server: "OK",
+        storage: "Render local filesystem",
+        uploadDirectory: "/uploads"
+    });
+});
+
+// ======================================================
+// UPLOAD IMAGE
+// ======================================================
 
 app.post(
     "/api/upload-image",
     upload.single("image"),
-    async (req, res) => {
+    function (req, res) {
 
         try {
 
@@ -81,62 +143,41 @@ app.post(
 
                 return res.status(400).json({
                     success: false,
-                    message: "No image received."
+                    message:
+                        "No image received."
                 });
             }
 
+            const imageUrl =
+                `${req.protocol}://${req.get("host")}` +
+                `/uploads/${req.file.filename}`;
 
-            const folder =
-                req.body.folder || "friends-circle";
-
-
-            const publicId =
-                req.body.publicId ||
-                `image_${Date.now()}`;
-
-
-            const result =
-                await new Promise(
-                    (resolve, reject) => {
-
-                        const stream =
-                            cloudinary.uploader.upload_stream(
-                                {
-                                    folder: folder,
-                                    public_id: publicId,
-                                    resource_type: "image"
-                                },
-
-                                (error, result) => {
-
-                                    if (error) {
-                                        reject(error);
-                                    } else {
-                                        resolve(result);
-                                    }
-                                }
-                            );
-
-                        stream.end(req.file.buffer);
-                    }
-                );
-
+            console.log(
+                "Image uploaded:",
+                req.file.filename
+            );
 
             return res.status(200).json({
 
                 success: true,
 
-                message: "Image uploaded successfully.",
+                message:
+                    "Image uploaded successfully.",
 
-                imageUrl: result.secure_url,
+                imageUrl: imageUrl,
 
-                publicId: result.public_id,
+                publicId:
+                    req.file.filename,
 
-                width: result.width,
+                width: null,
 
-                height: result.height,
+                height: null,
 
-                format: result.format
+                format:
+                    path.extname(
+                        req.file.filename
+                    )
+                    .replace(".", "")
             });
 
         } catch (error) {
@@ -158,47 +199,62 @@ app.post(
     }
 );
 
-
-// --------------------------------------------------
-// Delete Image
-// --------------------------------------------------
+// ======================================================
+// DELETE IMAGE
+// ======================================================
 
 app.delete(
     "/api/delete-image",
-    async (req, res) => {
+    function (req, res) {
 
         try {
 
             const publicId =
                 req.body.publicId;
 
-
             if (!publicId) {
 
                 return res.status(400).json({
-
                     success: false,
-
                     message:
                         "publicId is required."
                 });
             }
 
+            // Prevent path traversal
+            const safeFileName =
+                path.basename(publicId);
 
-            const result =
-                await cloudinary.uploader.destroy(
-                    publicId,
-                    {
-                        resource_type: "image"
-                    }
+            const filePath =
+                path.join(
+                    uploadDirectory,
+                    safeFileName
                 );
 
+            if (!fs.existsSync(filePath)) {
+
+                return res.status(404).json({
+                    success: false,
+                    message:
+                        "Image not found."
+                });
+            }
+
+            fs.unlinkSync(filePath);
+
+            console.log(
+                "Image deleted:",
+                safeFileName
+            );
 
             return res.status(200).json({
 
                 success: true,
 
-                result: result.result
+                message:
+                    "Image deleted successfully.",
+
+                result: "deleted"
             });
 
         } catch (error) {
@@ -220,15 +276,34 @@ app.delete(
     }
 );
 
+// ======================================================
+// 404 HANDLER
+// ======================================================
 
-// --------------------------------------------------
-// Error Handler
-// --------------------------------------------------
+app.use(function (req, res) {
+
+    return res.status(404).json({
+
+        success: false,
+
+        message:
+            "Endpoint not found.",
+
+        path: req.originalUrl
+    });
+});
+
+// ======================================================
+// ERROR HANDLER
+// ======================================================
 
 app.use(
-    (error, req, res, next) => {
+    function (error, req, res, next) {
 
-        console.error(error);
+        console.error(
+            "Server error:",
+            error
+        );
 
         if (
             error instanceof multer.MulterError
@@ -239,10 +314,10 @@ app.use(
                 success: false,
 
                 message:
-                    error.message
+                    error.message ||
+                    "Upload error."
             });
         }
-
 
         return res.status(500).json({
 
@@ -250,19 +325,26 @@ app.use(
 
             message:
                 error.message ||
-                "Server error."
+                "Internal server error."
         });
     }
 );
 
+// ======================================================
+// START SERVER
+// ======================================================
 
-// --------------------------------------------------
-// Start Server
-// --------------------------------------------------
+app.listen(
+    PORT,
+    "0.0.0.0",
+    function () {
 
-app.listen(PORT, () => {
+        console.log(
+            `Friends Circle Backend running on port ${PORT}`
+        );
 
-    console.log(
-        `Friends Circle Backend running on port ${PORT}`
-    );
-});
+        console.log(
+            `Upload directory: ${uploadDirectory}`
+        );
+    }
+);
