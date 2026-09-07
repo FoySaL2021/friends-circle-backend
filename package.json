@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "Friends Circle Render-only image upload backend",
   "main": "server.js",
+  "license": "MIT",
   "scripts": {
     "start": "node server.js"
   },
